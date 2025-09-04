@@ -42,24 +42,38 @@ def chunks(lst, n):
 def fetch_timeseries(terms):
     pytrends = TrendReq(hl="en-US", tz=360)
     frames = []
-    for batch in chunks(terms, 3):   # smaller batch size
-        pytrends.build_payload(batch, timeframe=TIMEFRAME, geo=GEO)
-        df = pytrends.interest_over_time()
-        if df.empty:
-            time.sleep(5)  # slower to avoid rate limits
-            continue
-        df = df.drop(columns=[c for c in df.columns if c == "isPartial"])
-        df = df.reset_index().rename(columns={"date":"date"})
-        m = df.melt(id_vars=["date"], var_name="keyword", value_name="interest_value")
-        m["geo"] = GEO
-        m["timeframe"] = TIMEFRAME
-        frames.append(m)
-        time.sleep(5)  # slower to avoid rate limits
+    for batch in chunks(terms, 2):  # smaller batch size to reduce 429s
+        retries = 3
+        wait = 30  # start with 30s wait if 429
+        while retries > 0:
+            try:
+                pytrends.build_payload(batch, timeframe=TIMEFRAME, geo=GEO)
+                df = pytrends.interest_over_time()
+                if df.empty:
+                    print(f"No data for batch: {batch}")
+                    time.sleep(10)
+                    break
+                df = df.drop(columns=[c for c in df.columns if c == "isPartial"])
+                df = df.reset_index().rename(columns={"date": "date"})
+                m = df.melt(id_vars=["date"], var_name="keyword", value_name="interest_value")
+                m["geo"] = GEO
+                m["timeframe"] = TIMEFRAME
+                frames.append(m)
+                time.sleep(10)  # wait before next batch
+                break  # success → break retry loop
+            except Exception as e:
+                if "429" in str(e):
+                    print(f"429 Too Many Requests for {batch}, waiting {wait}s before retry...")
+                    time.sleep(wait)
+                    wait *= 2
+                    retries -= 1
+                else:
+                    raise e
     if frames:
         out = pd.concat(frames, ignore_index=True)
         out["date"] = pd.to_datetime(out["date"]).dt.date.astype(str)
-        return out[["date","keyword","geo","timeframe","interest_value"]]
-    return pd.DataFrame(columns=["date","keyword","geo","timeframe","interest_value"])
+        return out[["date", "keyword", "geo", "timeframe", "interest_value"]]
+    return pd.DataFrame(columns=["date", "keyword", "geo", "timeframe", "interest_value"])
 
 def write_dedup(ws, df):
     if df.empty:
@@ -79,9 +93,8 @@ def write_dedup(ws, df):
 
 if __name__ == "__main__":
     sh = open_sheet()
-    terms = read_kpis(sh)              # reads queries from kpis!A2:A
+    terms = read_kpis(sh)
     ws = ensure_trends_sheet(sh)
     df = fetch_timeseries(terms)
     n = write_dedup(ws, df)
     print(f"Wrote {n} new rows to {TAB_NAME} at {datetime.utcnow().isoformat()}Z")
-
