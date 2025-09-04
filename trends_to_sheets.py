@@ -42,11 +42,11 @@ def chunks(lst, n):
 def fetch_timeseries(terms):
     pytrends = TrendReq(hl="en-US", tz=360)
     frames = []
-    for batch in chunks(terms, 5):
+    for batch in chunks(terms, 3):   # smaller batch size
         pytrends.build_payload(batch, timeframe=TIMEFRAME, geo=GEO)
         df = pytrends.interest_over_time()
         if df.empty:
-            time.sleep(1.2)
+            time.sleep(5)  # slower to avoid rate limits
             continue
         df = df.drop(columns=[c for c in df.columns if c == "isPartial"])
         df = df.reset_index().rename(columns={"date":"date"})
@@ -54,7 +54,7 @@ def fetch_timeseries(terms):
         m["geo"] = GEO
         m["timeframe"] = TIMEFRAME
         frames.append(m)
-        time.sleep(1.2)
+        time.sleep(5)  # slower to avoid rate limits
     if frames:
         out = pd.concat(frames, ignore_index=True)
         out["date"] = pd.to_datetime(out["date"]).dt.date.astype(str)
@@ -84,3 +84,4 @@ if __name__ == "__main__":
     df = fetch_timeseries(terms)
     n = write_dedup(ws, df)
     print(f"Wrote {n} new rows to {TAB_NAME} at {datetime.utcnow().isoformat()}Z")
+
