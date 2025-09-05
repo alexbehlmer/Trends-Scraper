@@ -6,10 +6,11 @@ from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
 # === CONFIG ===
-SHEET_ID = "1JSgU5ZtvRJGfZfgqFCUFz5LxxcNkcHoj55Y-wjT2FfA"
+SHEET_ID = "1JwwoOYn7Pq36atNiD8ssibPm3El2xEohEzeO_lKlReI"  # NEW SHEET ID
 TAB_NAME = "trends_daily"
 GEO = "US"
 TIMEFRAME = "today 3-m"
+USE_COMPANY_NAMES = True  # try company names from column B for better search terms
 
 def open_sheet():
     creds_json = os.environ["GOOGLE_SERVICE_ACCOUNT_JSON"]
@@ -23,9 +24,30 @@ def open_sheet():
     return sh
 
 def read_kpis(sh):
+    """
+    Reads kpis!A (tickers) and, if available, kpis!B (company names).
+    Returns a list of search terms:
+      - company names if USE_COMPANY_NAMES and col B exists
+      - otherwise tickers from col A
+    """
     ws = sh.worksheet("kpis")
-    vals = ws.col_values(1)  # column A
-    return [v for v in vals[1:] if v.strip()]
+    colA = ws.col_values(1)  # tickers
+    colB = None
+    try:
+        colB = ws.col_values(2)  # company names
+    except Exception:
+        pass
+
+    tickers = [v.strip() for v in colA[1:] if v and v.strip()]
+    if USE_COMPANY_NAMES and colB and len(colB) > 1:
+        names = [v.strip() for v in colB[1:] if v and v.strip()]
+        # align lengths; fallback to tickers where name missing
+        terms = []
+        for i in range(len(tickers)):
+            name = names[i] if i < len(names) and names[i] else ""
+            terms.append(name if name else tickers[i])
+        return terms
+    return tickers
 
 def ensure_trends_sheet(sh):
     try:
@@ -42,9 +64,9 @@ def chunks(lst, n):
 def fetch_timeseries(terms):
     pytrends = TrendReq(hl="en-US", tz=360)
     frames = []
-    for batch in chunks(terms, 2):  # smaller batch size to reduce 429s
+    for batch in chunks(terms, 2):  # small batches to reduce 429s
         retries = 3
-        wait = 30  # start with 30s wait if 429
+        wait = 30
         while retries > 0:
             try:
                 pytrends.build_payload(batch, timeframe=TIMEFRAME, geo=GEO)
@@ -59,8 +81,8 @@ def fetch_timeseries(terms):
                 m["geo"] = GEO
                 m["timeframe"] = TIMEFRAME
                 frames.append(m)
-                time.sleep(10)  # wait before next batch
-                break  # success → break retry loop
+                time.sleep(10)
+                break
             except Exception as e:
                 if "429" in str(e):
                     print(f"429 Too Many Requests for {batch}, waiting {wait}s before retry...")
@@ -79,7 +101,7 @@ def write_dedup(ws, df):
     if df.empty:
         return 0
     existing = ws.get_all_values()
-    if existing:
+    if existing and len(existing) > 1:
         data = existing[1:]
         existing_keys = {f"{r[0]}|{r[1]}" for r in data if len(r) >= 2}
     else:
@@ -98,3 +120,4 @@ if __name__ == "__main__":
     df = fetch_timeseries(terms)
     n = write_dedup(ws, df)
     print(f"Wrote {n} new rows to {TAB_NAME} at {datetime.utcnow().isoformat()}Z")
+
